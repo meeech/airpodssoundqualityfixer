@@ -157,7 +157,7 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
     menu.delegate = self;
     [ menu addItemWithTitle : versionString action : nil keyEquivalent : @"" ];
     [ menu addItem : [ NSMenuItem separatorItem ] ]; // A thin grey line
-    [ menu addItemWithTitle : @"Hint: Option-click to set Fallback" action : nil keyEquivalent : @"" ];
+    [ menu addItemWithTitle : @"Option-Click to Toggle fallback" action : nil keyEquivalent : @"" ];
     [ menu addItem : [ NSMenuItem separatorItem ] ]; // A thin grey line
     
     NSMenuItem* item =  [ menu

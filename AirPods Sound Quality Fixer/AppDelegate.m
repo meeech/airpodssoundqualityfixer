@@ -12,7 +12,7 @@
     AudioDeviceID preferredMicID; // User's primary preferred mic
     AudioDeviceID fallbackMicID;  // User's secondary/fallback mic
     NSUserDefaults* defaults;
-    NSMutableDictionary* itemsToIDS;
+    // NSMutableDictionary* itemsToIDS; // No longer needed
     NSMenuItem *startupItem;
 }
 
@@ -43,7 +43,7 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
 
     defaults = [ NSUserDefaults standardUserDefaults ];
     
-    itemsToIDS = [ NSMutableDictionary dictionary ];
+    // itemsToIDS = [ NSMutableDictionary dictionary ]; // No longer needed
     
     
     NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
@@ -112,10 +112,9 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
 
 - ( void ) deviceSelected : ( NSMenuItem* ) item
 {
-    NSNumber* number = itemsToIDS[ item.title ];
-    if ( number != nil )
+    if ( item.representedObject != nil && [item.representedObject isKindOfClass:[NSNumber class]] )
     {
-        AudioDeviceID selectedDeviceID = [ number unsignedIntValue ];
+        AudioDeviceID selectedDeviceID = [(NSNumber*)item.representedObject unsignedIntValue];
         NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
         
         // Check if Option key is pressed
@@ -291,6 +290,7 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
                 addItemWithTitle : displayDeviceName
                 action : @selector(deviceSelected:)
                 keyEquivalent : @"" ];
+            item.representedObject = [NSNumber numberWithUnsignedInt:oneDeviceID]; // Store ID directly
             
             // Checkmark the currently active (forced) device
             if ( oneDeviceID == forcedInputID && forcedInputID != UINT32_MAX )
@@ -299,7 +299,7 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
                 NSLog( @"Menu: Marking active device: %s  %u\n" , deviceName , (unsigned int)oneDeviceID );
             }
             
-            itemsToIDS[ nameStr ] = [ NSNumber numberWithUnsignedInt : oneDeviceID]; // Store original name for selection lookup
+            // itemsToIDS[ nameStr ] = [ NSNumber numberWithUnsignedInt : oneDeviceID]; // No longer needed
 
         }
 

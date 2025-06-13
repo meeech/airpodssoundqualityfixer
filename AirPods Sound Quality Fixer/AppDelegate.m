@@ -8,7 +8,9 @@
     BOOL paused;
     NSMenu* menu;
     NSStatusItem* statusItem;
-    AudioDeviceID forcedInputID;
+    AudioDeviceID forcedInputID; // Effective device ID to be forced
+    AudioDeviceID preferredMicID; // User's primary preferred mic
+    AudioDeviceID fallbackMicID;  // User's secondary/fallback mic
     NSUserDefaults* defaults;
     NSMutableDictionary* itemsToIDS;
     NSMenuItem *startupItem;
@@ -45,16 +47,24 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
     
     
     NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
-    NSInteger readenId = [prefs integerForKey: @"Device"];
-    
-    if (readenId == 0) {
-        [prefs setInteger:UINT32_MAX forKey: @"Device"];
-        [prefs synchronize];
+    // Load preferred and fallback microphone IDs
+    preferredMicID = (AudioDeviceID)[prefs integerForKey:@"PreferredMicDeviceID"];
+    if (preferredMicID == 0) { // If not set or old value, default to UINT32_MAX (no preference)
+        preferredMicID = UINT32_MAX;
+        [prefs setInteger:preferredMicID forKey:@"PreferredMicDeviceID"];
+    }
+
+    fallbackMicID = (AudioDeviceID)[prefs integerForKey:@"FallbackMicDeviceID"];
+    if (fallbackMicID == 0) { // If not set or old value, default to UINT32_MAX (no preference)
+        fallbackMicID = UINT32_MAX;
+        [prefs setInteger:fallbackMicID forKey:@"FallbackMicDeviceID"];
     }
     
-    forcedInputID = readenId;
-    
-    NSLog(@"Loaded device from UserDefaults: %d", forcedInputID);
+    // forcedInputID will be determined in listDevices based on preferred/fallback availability
+    forcedInputID = UINT32_MAX; // Initialize, will be set properly in listDevices
+
+    NSLog(@"Loaded PreferredMicDeviceID: %u, FallbackMicDeviceID: %u", preferredMicID, fallbackMicID);
+    [prefs synchronize]; // Ensure any defaults set are saved
 
     NSImage* image = [ NSImage imageNamed : @"airpods-icon" ];
     [ image setTemplate : YES ];
@@ -102,39 +112,32 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
 
 - ( void ) deviceSelected : ( NSMenuItem* ) item
 {
-
     NSNumber* number = itemsToIDS[ item.title ];
-    
     if ( number != nil )
     {
-    
-        AudioDeviceID newId = [ number unsignedIntValue ];
-        
-        NSLog( @"switching to new device : %u" , newId );
-        
-        forcedInputID = newId;
-        
+        AudioDeviceID selectedDeviceID = [ number unsignedIntValue ];
         NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
-        [prefs setInteger:newId forKey: @"Device"];
-        [prefs synchronize];
-        NSLog(@"Saved device from UserDefaults: %d", forcedInputID);
-
-        UInt32 propertySize = sizeof(UInt32);
-        AudioHardwareSetProperty(
-            kAudioHardwarePropertyDefaultInputDevice ,
-            propertySize ,
-            &forcedInputID );
         
-        // show forcing
+        // Check if Option key is pressed
+        BOOL optionKeyPressed = ([[[NSApplication sharedApplication] currentEvent] modifierFlags] & NSEventModifierFlagOption) != 0;
 
-        [ menu
-            insertItemWithTitle : @"forcing..."
-            action : NULL
-            keyEquivalent : @""
-            atIndex : 2 ];
+        if (optionKeyPressed) {
+            NSLog( @"Setting fallback device: %u" , selectedDeviceID );
+            fallbackMicID = selectedDeviceID;
+            [prefs setInteger:fallbackMicID forKey:@"FallbackMicDeviceID"];
+        } else {
+            NSLog( @"Setting preferred device: %u" , selectedDeviceID );
+            preferredMicID = selectedDeviceID;
+            [prefs setInteger:preferredMicID forKey:@"PreferredMicDeviceID"];
+        }
+        
+        [prefs synchronize];
+        NSLog(@"Saved PreferredMicDeviceID: %u, FallbackMicDeviceID: %u", preferredMicID, fallbackMicID);
 
+        // No longer directly set forcedInputID or system default here.
+        // Call listDevices to re-evaluate and apply the correct device.
+        [ self listDevices ];
     }
-    
 }
 
 
@@ -149,6 +152,8 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
     menu = [ [ NSMenu alloc ] init ];
     menu.delegate = self;
     [ menu addItemWithTitle : versionString action : nil keyEquivalent : @"" ];
+    [ menu addItem : [ NSMenuItem separatorItem ] ]; // A thin grey line
+    [ menu addItemWithTitle : @"Hint: Option-click to set Fallback" action : nil keyEquivalent : @"" ];
     [ menu addItem : [ NSMenuItem separatorItem ] ]; // A thin grey line
     
     NSMenuItem* item =  [ menu
@@ -181,29 +186,49 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
     
     NSLog( @"devices found : %i" , numberOfDevices );
     
-    if ( forcedInputID < UINT32_MAX )
-    {
-    
-        char found = 0;
+    // Determine the targetDeviceID based on preferred, fallback, and availability
+    AudioDeviceID targetDeviceID = UINT32_MAX;
+    BOOL preferredIsAvailable = NO;
+    BOOL fallbackIsAvailable = NO;
 
-        for( int index = 0 ;
-                 index < numberOfDevices ;
-                 index++ )
-        {
-        
-            if ( dev_array[ index] == forcedInputID ) found = 1;
-        
-        }
-        
-        if ( found == 0 )
-        {
-            NSLog( @"force input not found in device list" );
-            forcedInputID = UINT32_MAX;
-        }
-        else NSLog( @"force input found in device list" );
-        
+    // Check availability of preferred and fallback mics
+    for (int i = 0; i < numberOfDevices; i++) {
+        if (dev_array[i] == preferredMicID) preferredIsAvailable = YES;
+        if (dev_array[i] == fallbackMicID) fallbackIsAvailable = YES;
     }
 
+    if (preferredMicID != UINT32_MAX && preferredIsAvailable) {
+        targetDeviceID = preferredMicID;
+        NSLog(@"Using preferred mic: %u", targetDeviceID);
+    } else if (fallbackMicID != UINT32_MAX && fallbackIsAvailable) {
+        targetDeviceID = fallbackMicID;
+        NSLog(@"Preferred mic not available or not set. Using fallback mic: %u", targetDeviceID);
+    } else {
+        // If neither preferred nor fallback is available/set, try to find a 'built-in' as a last resort
+        // This part of the logic is moved down to where devices are iterated for menu building
+        NSLog(@"Neither preferred nor fallback mic is available/set. Will look for default.");
+    }
+
+    forcedInputID = targetDeviceID; // This is the device we will attempt to force
+
+    // If forcedInputID is still UINT32_MAX after checking preferred/fallback,
+    // the original logic for finding a 'built-in' mic will run later in this function.
+    // If a specific device (preferred or fallback) was selected and is NOT available,
+    // forcedInputID might be UINT32_MAX here, and the app will try to find a 'built-in' or other default.
+    // This ensures we don't try to force a non-existent device from old saved preferences.
+    BOOL currentForcedDeviceStillExists = NO;
+    if (forcedInputID != UINT32_MAX) {
+        for (int i = 0; i < numberOfDevices; i++) {
+            if (dev_array[i] == forcedInputID) {
+                currentForcedDeviceStillExists = YES;
+                break;
+            }
+        }
+        if (!currentForcedDeviceStillExists) {
+            NSLog(@"Previously selected target device (%u) no longer exists. Resetting.", forcedInputID);
+            forcedInputID = UINT32_MAX; // Reset if the chosen device is gone
+        }
+    }
 
     for( int index = 0 ;
              index < numberOfDevices ;
@@ -242,30 +267,34 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
             NSLog( @"found input device : %s  %u\n" , deviceName , (unsigned int)oneDeviceID );
             
             NSString* nameStr = [ NSString stringWithUTF8String : deviceName ];
+            NSString* displayDeviceName = [NSString stringWithString:nameStr];
 
-            if ( [ [ nameStr lowercaseString ] containsString : @"built" ] && forcedInputID == UINT32_MAX )
-            {
+            if (oneDeviceID == preferredMicID && preferredMicID != UINT32_MAX) {
+                displayDeviceName = [NSString stringWithFormat:@"%@ (Primary)", nameStr];
+            } else if (oneDeviceID == fallbackMicID && fallbackMicID != UINT32_MAX) {
+                displayDeviceName = [NSString stringWithFormat:@"%@ (Fallback)", nameStr];
+            }
 
-                // if there is no forced device yet, select "built-in" by default
-
-                NSLog( @"setting forced device : %s  %u\n" , deviceName , (unsigned int)oneDeviceID );
-
-                forcedInputID = oneDeviceID;
-                
+            // Defaulting logic: if no preferred/fallback is set or available, and forcedInputID is still UINT32_MAX,
+            // try to select a 'built-in' mic as a last resort.
+            if ( forcedInputID == UINT32_MAX && [ [ nameStr lowercaseString ] containsString : @"built" ] ) {
+                NSLog( @"No preferred/fallback. Setting default forced device to built-in: %s  %u\n" , deviceName , (unsigned int)oneDeviceID );
+                forcedInputID = oneDeviceID; // This becomes the effective device to force
             }
 
             NSMenuItem* item = [ menu
-                addItemWithTitle : [ NSString stringWithUTF8String : deviceName ]
+                addItemWithTitle : displayDeviceName
                 action : @selector(deviceSelected:)
                 keyEquivalent : @"" ];
             
-            if ( oneDeviceID == forcedInputID )
+            // Checkmark the currently active (forced) device
+            if ( oneDeviceID == forcedInputID && forcedInputID != UINT32_MAX )
             {
                 [ item setState : NSControlStateValueOn ];
-                NSLog( @"setting device selected : %s  %u\n" , deviceName , (unsigned int)oneDeviceID );
+                NSLog( @"Menu: Marking active device: %s  %u\n" , deviceName , (unsigned int)oneDeviceID );
             }
             
-            itemsToIDS[ nameStr ] = [ NSNumber numberWithUnsignedInt : oneDeviceID];
+            itemsToIDS[ nameStr ] = [ NSNumber numberWithUnsignedInt : oneDeviceID]; // Store original name for selection lookup
 
         }
 
@@ -289,25 +318,33 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
     
     NSLog( @"default input device is %u" , deviceID );
     
-    if ( !paused && deviceID != forcedInputID )
+    // If forcedInputID is valid (not UINT32_MAX) and different from current system default, then set it.
+    if ( !paused && forcedInputID != UINT32_MAX && deviceID != forcedInputID )
     {
-
-        NSLog( @"forcing input device for default : %u" , forcedInputID );
+        NSLog( @"Forcing system default input device to: %u" , forcedInputID );
 
         UInt32 propertySize = sizeof(UInt32);
-        AudioHardwareSetProperty(
+        OSStatus err = AudioHardwareSetProperty(
             kAudioHardwarePropertyDefaultInputDevice ,
             propertySize ,
             &forcedInputID );
         
-        // show forcing
-
-        [ menu
-            insertItemWithTitle : @"forcing..."
-            action : NULL
-            keyEquivalent : @""
-            atIndex : 2 ];
-
+        if (err == noErr) {
+            // Optionally, briefly show 'forcing...' message, or remove if too quick/flickery
+            // For simplicity, we can rely on the checkmark and (Primary)/(Fallback) indicators.
+            /*
+            [ menu
+                insertItemWithTitle : @"forcing..."
+                action : NULL
+                keyEquivalent : @""
+                atIndex : 2 ];
+            // Consider removing this temporary item after a short delay or on next menu open
+            */
+        } else {
+            NSLog( @"Error forcing input device: %d", err);
+        }
+    } else if (forcedInputID == UINT32_MAX && !paused) {
+        NSLog(@"No specific device to force. System default will be used or OS will choose.");
     }
     
     [ menu addItem : [ NSMenuItem separatorItem ] ]; // A thin grey line

@@ -122,8 +122,13 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
         BOOL optionKeyPressed = ([[[NSApplication sharedApplication] currentEvent] modifierFlags] & NSEventModifierFlagOption) != 0;
 
         if (optionKeyPressed) {
-            NSLog( @"Setting fallback device: %u" , selectedDeviceID );
-            fallbackMicID = selectedDeviceID;
+            if (selectedDeviceID == fallbackMicID) {
+                NSLog( @"Deselecting fallback device: %u" , selectedDeviceID );
+                fallbackMicID = UINT32_MAX; // Clear the fallback
+            } else {
+                NSLog( @"Setting fallback device: %u" , selectedDeviceID );
+                fallbackMicID = selectedDeviceID;
+            }
             [prefs setInteger:fallbackMicID forKey:@"FallbackMicDeviceID"];
         } else {
             NSLog( @"Setting preferred device: %u" , selectedDeviceID );

@@ -64,7 +64,6 @@ OSStatus callbackFunction(  AudioObjectID inObjectID,
     forcedInputID = UINT32_MAX; // Initialize, will be set properly in listDevices
 
     NSLog(@"Loaded PreferredMicDeviceID: %u, FallbackMicDeviceID: %u", preferredMicID, fallbackMicID);
-    [prefs synchronize]; // Ensure any defaults set are saved
 
     NSImage* image = [ NSImage imageNamed : @"airpods-icon" ];
     [ image setTemplate : YES ];
